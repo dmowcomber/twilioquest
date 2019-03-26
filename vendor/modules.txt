@@ -1,0 +1,6 @@
+# github.com/dgrijalva/jwt-go v3.2.0+incompatible
+github.com/dgrijalva/jwt-go
+# github.com/gorilla/schema v1.0.2
+github.com/gorilla/schema
+# github.com/sfreiberg/gotwilio v0.0.0-20181223013140-ccf5c3cb3e06
+github.com/sfreiberg/gotwilio
