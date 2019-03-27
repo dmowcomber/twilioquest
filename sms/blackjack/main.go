@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -16,6 +17,8 @@ type state struct {
 	playerHand []card
 	deck       []card
 	handCount  int
+	username   string
+	from       string
 }
 
 type card struct {
@@ -148,68 +151,113 @@ func smsEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	textMessage := r.URL.Query().Get("Body")
 	textMessageLower := strings.ToLower(textMessage)
-	fmt.Printf("request body: %q\n", textMessage)
-
 	from := r.URL.Query().Get("From")
+	fmt.Printf("%s - request body: %q\n", from, textMessage)
 
-	s, ok := states[from]
-	if ok {
-		if len(s.deck) == 0 {
-			s.dealNewHands()
-			message := "no more cards. this should never happen... shuffling"
-			message = message + "\n\nDealing new hands\n" + s.getStatus()
-			w.Write([]byte(lazyTwimlMessage(message)))
-
-			return
+	if strings.HasPrefix(textMessageLower, "list") || strings.HasPrefix(textMessageLower, "scores") {
+		statesSlice := make([]*state, 0, len(states))
+		for number, state := range states {
+			if number == "" {
+				continue
+			}
+			statesSlice = append(statesSlice, state)
 		}
 
-		if strings.HasPrefix(textMessageLower, "hit") || textMessageLower == "h" {
-			s.drawPlayer()
+		sort.Slice(statesSlice, func(i, j int) bool {
+			a := statesSlice[i]
+			b := statesSlice[j]
+			return a.money > b.money
+		})
 
-			playerHandScore, _ := getHandScore(s.playerHand)
-			if playerHandScore > 21 {
-				message := fmt.Sprintf("you bust with %d: %s\n", playerHandScore, formatHand(s.playerHand))
-				wasShuffled := s.dealNewHands()
-				if wasShuffled {
-					message = message + "\n\nShuffling deck\n"
-				}
-				// TODO: can this be in a separate message??
-				message = message + "\n\nDealing new hands\n" + s.getStatus()
-
-				w.Write([]byte(lazyTwimlMessage(message)))
-
-				return
+		scores := make([]string, 0, len(statesSlice))
+		for _, s := range statesSlice {
+			username := s.username
+			if username == "" {
+				username = s.from
 			}
-			w.Write([]byte(lazyTwimlMessage(s.getStatus())))
-		} else if strings.HasPrefix(textMessageLower, "stay") || textMessageLower == "s" {
+			scores = append(scores, fmt.Sprintf("$%d: %s", s.money, username))
+		}
+		message := strings.Join(scores, "\n")
 
-			s.dealerPlay()
+		w.Write([]byte(lazyTwimlMessage(message)))
+		return
+	}
 
-			message := fmt.Sprintf(s.getStayEndStatus())
+	s, ok := states[from]
+	if !ok {
+		// mutex states
+		s = newState()
+		s.from = from
+		states[from] = s
+
+		message := "Welcome to Blackjack!\nYou can type \"my name is {name}\" to set your username\nShuffling Cards...\n\n"
+		if s.setUsername(textMessage) {
+			message = fmt.Sprintf("%sUsername updated to %s\n\n", message, s.username)
+		}
+		message = message + s.getStatus()
+		w.Write([]byte(lazyTwimlMessage(message)))
+		return
+	}
+
+	if len(s.deck) == 0 {
+		s.dealNewHands()
+		message := "no more cards. this should never happen... shuffling"
+		message = message + "\n\nDealing new hands\n" + s.getStatus()
+		w.Write([]byte(lazyTwimlMessage(message)))
+		return
+	}
+
+	if s.setUsername(textMessage) {
+		w.Write([]byte(lazyTwimlMessage(fmt.Sprintf("Username updated to %s\n\n%s", s.username, s.getStatus()))))
+		return
+	}
+
+	if strings.HasPrefix(textMessageLower, "reset") {
+		s.money = 100
+		s.dealNewHands()
+		w.Write([]byte(lazyTwimlMessage(fmt.Sprintf("You went bankrupt and you came back to the casino\n\n%s", s.getStatus()))))
+		return
+	}
+
+	// if strings.HasPrefix(textMessageLower, "max bet") {
+	//
+	// }
+
+	if strings.HasPrefix(textMessageLower, "hit") || textMessageLower == "h" {
+		s.drawPlayer()
+
+		playerHandScore, _ := getHandScore(s.playerHand)
+		if playerHandScore > 21 {
+			message := fmt.Sprintf("You bust with %d: %s\n", playerHandScore, formatHand(s.playerHand))
 			wasShuffled := s.dealNewHands()
 			if wasShuffled {
 				message = message + "\n\nShuffling deck\n"
 			}
 			// TODO: can this be in a separate message??
 			message = message + "\n\nDealing new hands\n" + s.getStatus()
+
 			w.Write([]byte(lazyTwimlMessage(message)))
 			return
-		} else {
-			w.Write([]byte(lazyTwimlMessage("do you want to hit or stay?")))
-			return
 		}
+		w.Write([]byte(lazyTwimlMessage(s.getStatus())))
+	} else if strings.HasPrefix(textMessageLower, "stay") || textMessageLower == "s" {
+
+		s.dealerPlay()
+
+		message := fmt.Sprintf(s.getStayEndStatus())
+		wasShuffled := s.dealNewHands()
+		if wasShuffled {
+			message = message + "\n\nShuffling deck\n"
+		}
+		// TODO: can this be in a separate message??
+		message = message + "\n\nDealing new hands\n" + s.getStatus()
+		w.Write([]byte(lazyTwimlMessage(message)))
+		return
+	} else {
+		w.Write([]byte(lazyTwimlMessage("Do you want to hit or stay?")))
 		return
 	}
-
-	// mutex states
-	s = newState()
-	states[from] = s
-
-	message := "Welcome to Blackjack!\nShuffling Cards...\n\n" + s.getStatus()
-	w.Write([]byte(lazyTwimlMessage(message)))
 	return
-
-	// TODO mutex on state check
 }
 
 func (s *state) getStatus() string {
@@ -223,7 +271,7 @@ func (s *state) getStatus() string {
 	if playerHandScore != softScore {
 		score = fmt.Sprintf("%d or %d", playerHandScore, softScore)
 	}
-	return fmt.Sprintf("dealer's face up card: %s\nyour hand: %v\nyour score: %s\nType: hit or stay", s.dealerHand[0], formatHand(s.playerHand), score)
+	return fmt.Sprintf("Dealer's face up card: %s\nYour hand: %v\nYour current score: %s\nType: hit or stay", s.dealerHand[0], formatHand(s.playerHand), score)
 }
 
 func (s *state) getStayEndStatus() string {
@@ -232,14 +280,17 @@ func (s *state) getStayEndStatus() string {
 
 	winMessage := "Push. You tied with the dealer."
 	if dealerScore > 21 {
-		winMessage = "Dealer bust. You won!"
-	} else if dealerScore > playerScore {
-		winMessage = "You lost."
+		s.money = s.money + s.betAmount
+		winMessage = fmt.Sprintf("Dealer bust. You won $%d! You now have $%d.", s.betAmount, s.money)
 	} else if playerScore > dealerScore {
-		winMessage = "You won!"
+		s.money = s.money + s.betAmount
+		winMessage = fmt.Sprintf("You won $%d! You now have $%d.", s.betAmount, s.money)
+	} else if dealerScore > playerScore {
+		s.money = s.money - s.betAmount
+		winMessage = fmt.Sprintf("You lost $%d. You now have $%d.", s.betAmount, s.money)
 	}
-	winMessage = fmt.Sprintf("%s\nYou had %d and the dealer had %d.", winMessage, playerScore, dealerScore)
-	return fmt.Sprintf("dealer's hand: %v\nyour hand: %v\n%s\n", formatHand(s.dealerHand), formatHand(s.playerHand), winMessage)
+	winMessage = fmt.Sprintf("%s\nYour score was %d and the dealer's score was %d.", winMessage, playerScore, dealerScore)
+	return fmt.Sprintf("Dealer's hand: %v\nYour hand: %v\n%s\n", formatHand(s.dealerHand), formatHand(s.playerHand), winMessage)
 }
 
 func (s *state) dealerPlay() {
@@ -296,6 +347,23 @@ func getHandScore(cards []card) (score int, softScore int) {
 		}
 	}
 	return score, softScore
+}
+
+func (s *state) setUsername(textMessage string) bool {
+	namePrefix := "my name is "
+	textMessageLower := strings.ToLower(textMessage)
+	if strings.HasPrefix(textMessageLower, namePrefix) {
+		var username string
+		if len(textMessageLower)-len(namePrefix) > 32 {
+			username = textMessage[len(namePrefix) : 32+len(namePrefix)]
+		} else {
+			username = textMessage[len(namePrefix):]
+		}
+		s.username = username
+		fmt.Printf("%s set their username to %s", s.from, s.username)
+		return true
+	}
+	return false
 }
 
 func lazyTwimlMessage(message string) string {
