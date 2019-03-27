@@ -228,7 +228,8 @@ func smsEndpoint(w http.ResponseWriter, r *http.Request) {
 
 		playerHandScore, _ := getHandScore(s.playerHand)
 		if playerHandScore > 21 {
-			message := fmt.Sprintf("You bust with %d: %s\n", playerHandScore, formatHand(s.playerHand))
+			message := s.getEndStatus()
+
 			wasShuffled := s.dealNewHands()
 			if wasShuffled {
 				message = message + "\n\nShuffling deck\n"
@@ -244,7 +245,7 @@ func smsEndpoint(w http.ResponseWriter, r *http.Request) {
 
 		s.dealerPlay()
 
-		message := fmt.Sprintf(s.getStayEndStatus())
+		message := fmt.Sprintf(s.getEndStatus())
 		wasShuffled := s.dealNewHands()
 		if wasShuffled {
 			message = message + "\n\nShuffling deck\n"
@@ -254,7 +255,7 @@ func smsEndpoint(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(lazyTwimlMessage(message)))
 		return
 	} else {
-		w.Write([]byte(lazyTwimlMessage("Do you want to hit or stay?")))
+		w.Write([]byte(lazyTwimlMessage("Do you want to hit or stay\n\n" + s.getStatus())))
 		return
 	}
 	return
@@ -274,12 +275,15 @@ func (s *state) getStatus() string {
 	return fmt.Sprintf("Dealer's face up card: %s\nYour hand: %v\nYour current score: %s\nType: hit or stay", s.dealerHand[0], formatHand(s.playerHand), score)
 }
 
-func (s *state) getStayEndStatus() string {
+func (s *state) getEndStatus() string {
 	dealerScore, _ := getHandScore(s.dealerHand)
 	playerScore, _ := getHandScore(s.playerHand)
 
 	winMessage := "Push. You tied with the dealer."
-	if dealerScore > 21 {
+	if playerScore > 21 {
+		s.money = s.money - s.betAmount
+		winMessage = fmt.Sprintf("You bust! You lost $%d. You now have $%d.", s.betAmount, s.money)
+	} else if dealerScore > 21 {
 		s.money = s.money + s.betAmount
 		winMessage = fmt.Sprintf("Dealer bust. You won $%d! You now have $%d.", s.betAmount, s.money)
 	} else if playerScore > dealerScore {
